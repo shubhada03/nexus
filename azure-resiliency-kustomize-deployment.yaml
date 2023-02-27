@@ -1,0 +1,86 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Chart.Name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ .Chart.Name }}
+spec:
+  replicas: {{ .Values.replicaCount}}
+  selector:
+    matchLabels:
+      app: {{ .Chart.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Chart.Name}}
+    spec:
+      initContainers:
+        - name: nexus-data-dir-init #chown nexus-data to 'nexus' user and init log directories/files for a new pod
+          image: busybox
+          command: ['/bin/sh', '-c', 'sleep 10']
+          args: ["-c" , "chown -R 200:200 /nexus-data && \
+                         mkdir -p /nexus-data/etc/logback && \
+                         mkdir -p /nexus-data/log/tasks && \
+                         mkdir -p /nexus-data/log/audit && \ 
+                         mkdir -p /nexus-data/tmp && \
+                         touch -a /nexus-data/log/tasks/allTasks.log && \
+                         touch -a /nexus-data/log/audit/audit.log && \
+                         touch -a /nexus-data/log/request.log"]
+                         
+          volumeMounts:
+            - name: nexusdata
+              mountPath: /nexus-data
+      containers:
+      - name: {{ .Chart.Name }}
+        image: sonatype/nexus3:3.44.0
+        #command: ["sh", "-c", "while true; do sleep 10;done"]
+        securityContext:
+          runAsUser: 200
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ .Values.containerPort.http }}
+        env:
+        - name: NEXUS_DATA
+          value: "/nexus-data"
+        - name: DB_NAME
+          value: {{ .Values.postgressSQLDatabaseName | quote }}
+        - name: DB_USER
+          value: {{ .Values.postgressSQLUser | quote }}
+        - name: DB_HOST
+          value: {{ .Values.postgressSQLSever | quote }}
+        - name: DB_PORT
+          value: {{ .Values.postgressSQLPort | quote }}
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Chart.Name}}-secret
+              key: db-password
+        - name: NEXUS_SECURITY_INITIAL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Chart.Name}}-secret
+              key: nxrm-admin-password
+        - name: INSTALL4J_ADD_VM_PARAMS
+          value: "-Xms2703m -Xmx2703m -XX:MaxDirectMemorySize=2703m \
+          -Dnexus.datastore.enabled=true -Djava.util.prefs.userRoot=$NEXUS_HOME/bin/nexus.vmoptions \
+          -Dnexus.datastore.nexus.jdbcUrl=jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require \
+          -Dnexus.datastore.nexus.username=${DB_USER}@nexus-postgresql-server01 \
+          -Dnexus.datastore.nexus.password=${DB_PASSWORD}"
+        volumeMounts:
+        - name: nexusdata
+          mountPath: /nexus-data
+        - name: logback-tasklogfile-override
+          mountPath: /nexus-data/etc/logback/logback-tasklogfile-appender-override.xml
+          subPath: logback-tasklogfile-appender-override.xml
+      volumes:
+      - name: nexusdata
+        persistentVolumeClaim:
+          claimName: {{ .Chart.Name}}-persistent-volume-claim
+      - name: logback-tasklogfile-override
+        configMap:
+          name: {{ .Chart.Name}}-configmap
+          items:
+               - key: logback-tasklogfile-appender-override.xml
+                 path: logback-tasklogfile-appender-override.xml
